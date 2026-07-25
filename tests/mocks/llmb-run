@@ -1,0 +1,59 @@
+#!/bin/bash
+# Mock llmb-run. Behaviour knobs:
+#   MOCK_LLMB_MODE=submit|single     which subcommand --help advertises
+#   MOCK_LLMB_HAS_JOBS=1|0           whether `jobs` exists
+#   MOCK_LLMB_FAIL=1                 submission exits 1
+#   MOCK_LLMB_NOJOBID=1              exit 0 but print no parsable job id
+#   MOCK_LLMB_JOBID_STYLE=JobID|jobid|Jobid|sbatch
+#   MOCK_LLMB_TFLOPS=<n>             value returned by `jobs show`
+source "$(dirname "$0")/_mocklib.sh"
+MODE="${MOCK_LLMB_MODE:-submit}"
+case "${1:-}" in
+  --help|-h)
+    printf 'usage: llmb-run\n\ncommands:\n'
+    [[ "$MODE" == submit ]] && printf '  submit  launch a workload\n  jobs    inspect jobs\n' || printf '  single  launch one benchmark\n'
+    exit 0 ;;
+  list)
+    cat "$MOCK_DIR/llmb_workloads" 2>/dev/null || printf 'microbenchmark_nccl\npretrain_nemotron-h\npretrain_deepseek-v3\n'
+    exit 0 ;;
+  jobs)
+    [[ "${MOCK_LLMB_HAS_JOBS:-1}" == 1 ]] || { printf "llmb-run: invalid choice: 'jobs'\n" >&2; exit 2; }
+    case "${2:-}" in
+      --help) printf 'usage: llmb-run jobs {list,show}\n'; exit 0 ;;
+      show)
+        jid="${3:-}"
+        printf 'Job ID : %s\n' "$jid"
+        printf 'Status : COMPLETED\n'
+        printf 'Node List : %s\n' "$(mock_job_field "$jid" nodes)"
+        printf 'TFLOPS/GPU : %s\n' "${MOCK_LLMB_TFLOPS:-712.5}"
+        printf 'Log Dir : %s\n' "${MOCK_DIR}/logdir_${jid}"
+        exit 0 ;;
+      list) cat "$MOCK_DIR/llmb_jobs_list" 2>/dev/null; exit 0 ;;
+    esac ;;
+esac
+mock_log "$@"
+printf '%s\n' "env: RUN_CONF_IMAGE=${RUN_CONF_IMAGE:-} MAX_STEPS=${MAX_STEPS:-} TIME_LIMIT=${TIME_LIMIT:-} NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-}" >> "$MOCK_DIR/llmb.env.log"
+printf '%s\n' "$*" >> "$MOCK_DIR/llmb.args.log"
+sub="${1:-}"
+if [[ "$sub" != submit && "$sub" != single ]]; then
+  printf "llmb-run: invalid choice: '%s'\n" "$sub" >&2; exit 2
+fi
+if [[ "$sub" == submit && "$MODE" == single ]]; then
+  printf "llmb-run: invalid choice: 'submit'\n" >&2; exit 2
+fi
+[[ "${MOCK_LLMB_FAIL:-0}" == 1 ]] && { printf 'error: scale not supported\n' >&2; exit 1; }
+jid=$(( $(cat "$MOCK_DIR/nextjob" 2>/dev/null || echo 40000) + 1 ))
+printf '%s\n' "$jid" > "$MOCK_DIR/nextjob"
+nodes=""
+prev=""
+for a in "$@"; do [[ "$prev" == "--nodelist" ]] && nodes="$a"; prev="$a"; done
+printf '%s RUNNING 00:05:00 %s\n' "$jid" "${nodes:-unknown}" >> "$MOCK_DIR/jobs.state"
+printf 'Experiment Status for mock_%s\n- Status: PENDING\n' "$jid"
+[[ "${MOCK_LLMB_NOJOBID:-0}" == 1 ]] && { printf 'LAUNCHED (id withheld by mock)\n'; exit 0; }
+case "${MOCK_LLMB_JOBID_STYLE:-JobID}" in
+  JobID)  printf 'LAUNCHED: mock dtype=fp8 scale=x jobid=%s\nJobID: %s, Workdir: %s/wd_%s\n' "$jid" "$jid" "$MOCK_DIR" "$jid" ;;
+  jobid)  printf 'LAUNCHED: mock dtype=fp8 scale=x jobid=%s\n' "$jid" ;;
+  Jobid)  printf -- '- Job id: %s\n' "$jid" ;;
+  sbatch) printf 'Submitted batch job %s\n' "$jid" ;;
+esac
+exit 0

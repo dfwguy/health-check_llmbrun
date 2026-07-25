@@ -1,0 +1,16 @@
+#!/bin/bash
+source "$(dirname "$0")/_mocklib.sh"
+mock_log "$@"
+if [[ "${1:-}" == show && "${2:-}" == config ]]; then
+  printf 'TopologyPlugin          = %s\n' "${MOCK_TOPOLOGY:-topology/block}"
+  exit 0
+fi
+printf '%s\n' "$*" >> "$MOCK_DIR/scontrol.log"
+# reflect drains back into node state so later passes see them
+if [[ "$*" == *"state=DRAIN"* ]]; then
+  nl="$(printf '%s\n' "$@" | sed -n 's/^nodename=//p')"
+  for n in $("$(dirname "$0")/../expand.sh" "$nl"); do
+    printf '%s drained\n' "$n" >> "$MOCK_DIR/nodes.state"
+  done
+fi
+exit 0

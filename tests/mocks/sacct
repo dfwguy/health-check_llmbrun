@@ -1,0 +1,16 @@
+#!/bin/bash
+source "$(dirname "$0")/_mocklib.sh"
+mock_log "$@"
+jid=""; fmt=""
+while (( $# )); do
+  case "$1" in -j) jid="$2"; shift ;; -o) fmt="$2"; shift ;; esac
+  shift
+done
+[[ -z "$jid" ]] && exit 0
+st="$(mock_job_field "$jid" state)"; [[ -z "$st" ]] && exit 0
+case "$fmt" in
+  State) printf '%s\n' "$st" ;;
+  Elapsed) printf '%s\n' "$(mock_job_field "$jid" elapsed)" ;;
+  NodeList) printf '%s\n' "$(mock_job_field "$jid" nodes)" ;;
+  *) printf '%s\n' "$st" ;;
+esac

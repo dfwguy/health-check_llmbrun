@@ -1,0 +1,6 @@
+#!/bin/bash
+source "$(dirname "$0")/_mocklib.sh"
+mock_log "$@"
+jid=$(( $(cat "$MOCK_DIR/nextjob" 2>/dev/null || echo 90000) + 1 ))
+printf '%s\n' "$jid" > "$MOCK_DIR/nextjob"
+printf 'Submitted batch job %s\n' "$jid"

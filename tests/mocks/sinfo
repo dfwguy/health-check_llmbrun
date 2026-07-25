@@ -1,0 +1,26 @@
+#!/bin/bash
+source "$(dirname "$0")/_mocklib.sh"
+mock_log "$@"
+node=""; part=""; fmt=""; byname=0
+while (( $# )); do
+  case "$1" in
+    -n) node="$2"; shift ;;
+    -p) part="$2"; shift ;;
+    -o) fmt="$2"; shift ;;
+    -N) byname=1 ;;
+    -h|-s) ;;
+  esac
+  shift
+done
+case "$fmt" in
+  '%G') cat "$MOCK_DIR/gres" 2>/dev/null || printf 'gpu:4\n'; exit 0 ;;
+esac
+if [[ -n "$node" ]]; then mock_node_state "$node"; exit 0; fi
+if (( byname )); then
+  # sinfo -N -o %N : one node per line (whole cluster, or the given partition)
+  if [[ -f "$MOCK_DIR/all.nodes" ]]; then cat "$MOCK_DIR/all.nodes"
+  else tr ',' '\n' < "$MOCK_DIR/partition.nodes" 2>/dev/null; fi
+  exit 0
+fi
+if [[ -n "$part" ]]; then cat "$MOCK_DIR/partition.nodes" 2>/dev/null; exit 0; fi
+exit 0

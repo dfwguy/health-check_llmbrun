@@ -1,0 +1,8 @@
+#!/bin/bash
+source "$(dirname "$0")/_mocklib.sh"
+mock_log "$@"
+printf '%s\n' "$*" >> "$MOCK_DIR/scancel.log"
+for j in "$@"; do
+  [[ "$j" =~ ^[0-9]+$ ]] || continue
+  awk -v j="$j" '{ if ($1==j) $2="CANCELLED"; print }' "$MOCK_DIR/jobs.state" > "$MOCK_DIR/jobs.state.n" && mv "$MOCK_DIR/jobs.state.n" "$MOCK_DIR/jobs.state"
+done

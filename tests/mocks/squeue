@@ -1,0 +1,36 @@
+#!/bin/bash
+source "$(dirname "$0")/_mocklib.sh"
+mock_log "$@"
+jid=""; node=""; user=""; fmt=""
+while (( $# )); do
+  case "$1" in
+    -j) jid="$2"; shift ;;
+    -w) node="$2"; shift ;;
+    -u) user="$2"; shift ;;
+    -o) fmt="$2"; shift ;;
+    -h) ;;
+  esac
+  shift
+done
+if [[ -n "$user" ]]; then
+  # queue depth = non-terminal jobs
+  awk '$2=="RUNNING"||$2=="PENDING"{print $1}' "$MOCK_DIR/jobs.state" 2>/dev/null
+  exit 0
+fi
+if [[ -n "$jid" ]]; then
+  st="$(mock_job_field "$jid" state)"
+  case "$st" in RUNNING|PENDING) ;; *) exit 0 ;; esac   # squeue only knows live jobs
+  case "$fmt" in
+    '%T') printf '%s\n' "$st" ;;
+    '%M') printf '%s\n' "$(mock_job_field "$jid" elapsed)" ;;
+    '%N') printf '%s\n' "$(mock_job_field "$jid" nodes)" ;;
+    *) printf '%s\n' "$st" ;;
+  esac
+  exit 0
+fi
+if [[ -n "$node" ]]; then
+  # is there a live job on this node?
+  awk -v n="$node" '($2=="RUNNING"||$2=="PENDING") && index($4,n){print $3, $2; exit}' "$MOCK_DIR/jobs.state" 2>/dev/null
+  exit 0
+fi
+exit 0

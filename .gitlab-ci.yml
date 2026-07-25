@@ -1,0 +1,17 @@
+# GitLab CI: the offline suite needs no cluster, so it can gate every push.
+stages: [validate]
+
+lint:
+  stage: validate
+  image: bash:5
+  before_script: [apk add --no-cache coreutils findutils gawk grep sed diffutils]
+  script: [bash tests/lint.sh]
+
+test:
+  stage: validate
+  image: bash:5
+  before_script: [apk add --no-cache coreutils findutils gawk grep sed diffutils util-linux]
+  script:
+    - bash tests/run-tests.sh
+    - bash tests/preflight.sh 4      # uses conf/inventory/racks.txt.example in CI
+    - bash tests/simulate.sh 8
