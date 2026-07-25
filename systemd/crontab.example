@@ -1,0 +1,5 @@
+# llmb-bringup, if you prefer cron to systemd timers.
+# Both halves are lock-protected; overlapping runs exit 0 without submitting.
+*/5  * * * * svc-bringup /opt/llmb-bringup/bin/rack-orchestrator.sh >/dev/null 2>&1
+*/2  * * * * svc-bringup /opt/llmb-bringup/bin/llmb-collect.sh      >/dev/null 2>&1
+0    7 * * * svc-bringup /opt/llmb-bringup/bin/status-daily-report.sh >/dev/null 2>&1

@@ -1,0 +1,14 @@
+[Unit]
+Description=llmb-bringup rack orchestrator (one pass)
+After=network-online.target munge.service
+ConditionPathIsDirectory=/opt/llmb-bringup
+
+[Service]
+Type=oneshot
+User=svc-bringup
+WorkingDirectory=/opt/llmb-bringup
+ExecStart=/opt/llmb-bringup/bin/rack-orchestrator.sh
+# The pass is lock-protected and idempotent, so an overlapping timer tick is
+# harmless: the second invocation exits 0 without submitting.
+TimeoutStartSec=900
+Nice=10
