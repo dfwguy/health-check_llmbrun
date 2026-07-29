@@ -22,6 +22,22 @@ bin/rack-orchestrator.sh --dry-run
 Ported from an sbatch/Slurm bring-up suite; see [MIGRATION.md](MIGRATION.md) for
 the command mapping and the bugs offline validation caught.
 
+**Validated on real hardware.** The suite has been run end to end against a live
+GB300 NVL72 cluster — a full 72-GPU NCCL sweep through `llmb-run submit`, with
+the measured bandwidth recorded next to the profile floors it is scored against.
+See [VALIDATION-NscaleTX-2026-07-29.md](VALIDATION-NscaleTX-2026-07-29.md) for
+the numbers, the container environment gotchas that cost real debugging time
+(§11.1 below), and the audit trail for "does this repo modify `llmb-run`?".
+
+### Does this repo modify `llmb-run`? No.
+
+The first question every site team asks, so it is answered up front and is
+verifiable from the tree. `lib/llmb.sh` is the only file that knows how to talk
+to `llmb-run`; it **invokes** the CLI and never writes into `$LLMB_INSTALL` or
+the `dgxc-benchmarking` checkout. Recipes, `metadata.yaml`, the container and
+`llmb-run` itself are stock. What changed is the *caller*: `sbatch
+jobs/allreduce.sbatch` became `llmb-run submit -w microbenchmark_nccl …`.
+
 ---
 
 ## Contents
@@ -37,6 +53,7 @@ the command mapping and the bugs offline validation caught.
 9. [Platform profiles and thresholds](#9-platform-profiles-and-thresholds)
 10. [Day-2 operations](#10-day-2-operations)
 11. [Troubleshooting](#11-troubleshooting)
+    · [11.1 Environment variables you must not set](#111-environment-variables-you-must-not-set)
 12. [Development and testing](#12-development-and-testing)
 
 ---
@@ -162,6 +179,23 @@ attributed to a rack — that would corrupt the matrix. Override with
 
 Without `jobs`, TFLOPS/GPU is unreadable and pretrain workloads fail with
 `no TFLOPS/GPU reported`. Upgrade, or set `metric=-` on that workload.
+
+### Why `--force` is not optional
+
+A rack is rarely a power of two. An 18-tray GB300 NVL72 rack is **72 GPUs**, and
+upstream `nccl/metadata.yaml` for `gb300` ships a scale whitelist of
+`[4, 8, 16, 32, 64, 128, 256, …]` — 72 is not in it, so a plain submit is
+**rejected outright**.
+
+`conf/workloads.conf` sets `scale_flag=force` on every rack- and group-scope
+workload, which becomes `llmb-run --force` and bypasses the whitelist *without
+touching upstream recipe data*. This is the supported way to do it. Site tooling
+that instead patches `metadata.yaml` will have the edit silently reverted by the
+installer's `git checkout -f` on its next run, and the job will start failing
+again weeks later with no obvious cause.
+
+If your rack size happens to be a whitelisted scale you can set
+`scale_flag=-`, but there is no reason to.
 
 ### Prove one job by hand before automating
 
@@ -431,6 +465,29 @@ silently become a default.
 `nccl_single` sweeps all five collectives (all_reduce, all_gather,
 reduce_scatter, alltoall, sendrecv) in one job.
 
+### What one sweep actually contains
+
+`microbenchmark_nccl -s nccl` is **24 tests**, not five — each collective runs
+several variants. On a 72-GPU GB300 rack the whole sweep is one Slurm job of
+roughly 26 minutes. The six `all_reduce` variants are
+`NCCL_NVLS_ENABLE=[0,1]` × `-G=[None,2,4]`, and **the two halves are far apart**:
+
+```
+NVLS off :  704.17   696.08   696.27     GB/s busbw
+NVLS on  :  914.98   916.60   916.84
+```
+
+NVLS is worth roughly **+31 %**. This matters for scoring: the GB300 all_reduce
+floor is 820, so a parser that reads the *first* block rather than the best would
+report ~700 and produce a **false FAIL on a healthy rack**.
+
+`nccl_peak_busbw` in `lib/results.sh`/`lib/llmb.sh` therefore takes the peak
+across every sweep file for a collective, every message size, and both the
+in-place and out-of-place `busbw` columns — so the NVLS-on block wins. If you
+replace the parser, preserve that: **score a collective on its best block, not
+its first.** `tests/lint.sh` and `test_unit_nccl_busbw_both_layouts` cover the
+column-layout half of this.
+
 Groups are formed from the inventory in order, so with a tidy inventory they do
 not straddle a row or scalable unit. Partial trailing groups are dropped: 3 racks
 is not a 4-rack test. `MULTI_RACKS_PER_JOB` sets the size.
@@ -457,8 +514,31 @@ grep -h '^m_' state/racks/*/nccl_single.state | sort | uniq -c
 ```
 
 Set the floors to roughly 90 % of what healthy racks actually achieve, in your
-profile. The `gb300-nvl72` numbers are field observations from one fleet, not
-vendor specifications — treat them as a starting point.
+profile.
+
+### The `gb300-nvl72` floors are measured, not guessed
+
+A full sweep on one healthy 72-GPU rack (job 65828, COMPLETED in 26m15s,
+`#wrong=0` on all 24 tests) against the shipped floors:
+
+| Collective | Profile floor | Measured | Margin |
+|---|---|---|---|
+| all_reduce | 820 | **916.84** | +11.8 % |
+| reduce_scatter | 640 | **708.30** | +10.7 % |
+| alltoall | 620 | **690.72** | +11.4 % |
+| sendrecv | 625 | **686.84** | +9.9 % |
+| all_gather | 620 | **646.78** | +4.3 % |
+
+All five clear their floor, and the margins are tight enough (4–12 %) that the
+floors are doing real work rather than passing everything. `all_gather` has the
+least headroom — expect it to be the first collective to flag a marginal rack.
+`PROFILE_GPUS_PER_NODE=4` × `PROFILE_NODES_PER_RACK=18` = 72 matched the live
+rack exactly. Full detail and method in
+[VALIDATION-NscaleTX-2026-07-29.md](VALIDATION-NscaleTX-2026-07-29.md) §3.
+
+These are still **field observations from one fleet, not vendor specifications**.
+They are a defensible starting point for GB300 NVL72; confirm on your first few
+racks. Every other profile ships uncalibrated on purpose.
 
 The fleet-relative gate flags any rack more than `OUTLIER_FRAC` (5 %) below the
 running mean of already-passing racks, once `OUTLIER_MIN_SAMPLES` (8) exist.
@@ -518,16 +598,49 @@ bring-up call. Each carries `logdir=` pointing at the raw llmb output.
 | All racks fail thresholds at once | uncalibrated floors | §9 |
 | `refusing to run as root` | wrong user | run as the service user, or `ALLOW_ROOT=1` |
 | Container pull slow every job | image not staged | `actions/file_copy.sh` |
+| `Invalid scale` / submit rejected outright | rack GPU count not in the upstream scale whitelist | keep `scale_flag=force`; never patch `metadata.yaml` (§3) |
+| `ucp_ep_create … Destination is unreachable`, every rank `Killed` | `UCX_TLS` restricts transports the container does not have | unset it — see §11.1 |
+| `Detected mixed local CollNet device counts across ranks (min 3, max 4)` | `NCCL_IB_HCA` pinned fleet-wide, but a tray has fewer rails | unset it and let each rank auto-detect — §11.1 |
+| Healthy rack FAILs all_reduce at ~700 GB/s | scored the NVLS-off block instead of the best | parser must take the peak across blocks (§8) |
 
 Logs: `log/aat.log`. Verdicts: `state/racks/<rack>/<workload>.state`. Drain
 reasons: `sinfo -R`.
+
+### 11.1 Environment variables you must not set
+
+Confirmed the hard way on a live GB300 cluster. All three look like reasonable
+fabric tuning and all three break rack-scale jobs. This repo deliberately sets
+**none** of them — do not add them to `LLMB_EXTRA_ENV`.
+
+| Variable | What happens if you set it |
+|---|---|
+| `UCX_TLS` (e.g. `^tcp`) | **Fatal.** The llmb/NeMo container exposes only tcp/IPoIB — no mlx5 verbs — so forbidding tcp leaves UCX with no transport at all: `ucp_ep_create … Destination is unreachable`, every rank `Killed`. |
+| `NCCL_IB_HCA` | **Fatal on any asymmetric rack.** Rail counts are a *per-node* fact. Pinning a list derived from one node's probe makes NCCL open a device that does not exist on another tray → `Detected mixed local CollNet device counts across ranks` and the job aborts. |
+| `UCX_NET_DEVICES` | Same failure class as the two above, for the same reason. |
+
+The rule behind all three: **probe results from one node are not fleet facts.**
+Let each rank auto-detect its own devices.
+
+`NCCL_SOCKET_IFNAME` is the exception and *is* set from `cluster.conf` — it names
+the bootstrap interface, not a device list, and the interview probes it on a real
+compute node (§4).
+
+#### Rail asymmetry is real, and tolerable
+
+On the validated cluster two trays carried 3 of 4 compute rails (verified via
+sysfs: ACTIVE + InfiniBand + 800G, bond excluded). Unpinned, the llmb container
+path completed the full sweep anyway; a host-mpirun path did not. So asymmetry is
+not automatically a bring-up blocker — but it is exactly the condition that turns
+a pinned `NCCL_IB_HCA` into an aborted job, which is why the table above is not
+optional advice.
 
 ---
 
 ## 12. Development and testing
 
 Everything runs offline against mock `llmb-run` and mock Slurm — no cluster, so
-CI gates every push.
+CI gates every push. Current state: **37 tests, 0 failing**, plus lint clean over
+31 shell files and `conf/workloads.conf`.
 
 ```bash
 tests/lint.sh          # parse + pitfall checks (shellcheck substitute)
@@ -544,6 +657,9 @@ beyond a docker executor with a `bash:5` image.
 ### Layout
 
 ```
+README.md                        this file
+MIGRATION.md                     sbatch -> llmb-run command mapping, limitations
+VALIDATION-NscaleTX-*.md         live-cluster evidence behind the thresholds
 bin/interview.sh                 site interview -> conf/cluster.conf + inventory
 bin/verify-cluster.sh            pre-deployment assumption checker
 bin/rack-orchestrator.sh         head-node driver (collect + submit)
@@ -551,6 +667,11 @@ bin/rack-status.sh               operator views
 bin/llmb-collect.sh              collection-only pass
 bin/status-check.sh              per-node status
 bin/status-daily-report.sh       CSV report
+bin/set-valid-default.sh         set the node-health golden baseline
+bin/node-health-refresh.sh       force a health re-check on a nodelist
+bin/single-node-purge.sh         clear one node's results after a swap
+bin/watch-rack.sh                live watch of a nodelist
+bin/sync-check.sh                carried over unchanged from the sbatch suite
 conf/cluster.conf.example        every setting, documented
 conf/workloads.conf              validation matrix and gating order
 conf/profiles/                   rack geometry + NCCL floors per platform
@@ -560,7 +681,11 @@ lib/                             common, nodeset, slurm, rack, llmb, results,
 actions/node_health.sh           per-node hardware/software checks
 actions/launch_job.sh            per-node, node-scope sbatch work only
 actions/file_copy.sh             hierarchical image staging
-jobs/                            sbatch job files
+actions/valid-node-check.sh      BCM category gate for the health trigger
+jobs/dcgm.sbatch                 the one sbatch workload still in the matrix
+jobs/example.sbatch              template for adding a runner=sbatch check
+jobs/hpl.sbatch  jobs/hpl/*.dat  carried over, NOT in the matrix (see MIGRATION)
+jobs/mnubergemm.sbatch           carried over, NOT in the matrix
 pre-post/                        BCM action/trigger registration
 systemd/                         timer, service, crontab example
 docs/gen-inventory-from-slurm.sh inventory from live Slurm
