@@ -140,11 +140,17 @@ call. `tests/lint.sh` now has a rule for the first three classes.
   them as `runner=sbatch` entries if the acceptance plan needs them.
 - **No sacct on the head node** degrades job tracking to `squeue` only, which
   loses jobs the moment they finish. The collector will then report
-  `unknown to slurm` and retry. Check `sacct -j 1` works.
+  `unknown to slurm` and retry. Check `sacct -j 1` works. (Present on the
+  validated GB300 cluster, so this path stayed theoretical there.)
+
+Live-cluster results, measured bandwidth vs the shipped floors, and the container
+environment variables that must not be set are in
+[VALIDATION-NscaleTX-2026-07-29.md](VALIDATION-NscaleTX-2026-07-29.md).
 
 ## Offline test coverage
 
-`tests/run-tests.sh` — 31 tests, no cluster required, mock `llmb-run` + Slurm:
+`tests/run-tests.sh` — **37 tests, all passing**, no cluster required, mock
+`llmb-run` + Slurm:
 
 - hostlist fold/expand/subtract incl. the non-contiguous the target cluster tray numbering
 - job-id parsing across all four output shapes seen in the wild
